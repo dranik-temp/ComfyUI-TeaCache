@@ -9,7 +9,8 @@ from typing import Optional
 from unittest.mock import patch
 
 from comfy.ldm.flux.layers import timestep_embedding, apply_mod
-from comfy.ldm.lightricks.model import precompute_freqs_cis
+# from comfy.ldm.lightricks.model import precompute_freqs_cis
+from comfy.ldm.lightricks.model import LTXBaseModel
 from comfy.ldm.lightricks.symmetric_patchifier import latent_to_pixel_coords
 from comfy.ldm.wan.model import sinusoidal_embedding_1d
 
@@ -60,7 +61,7 @@ def teacache_flux_forward(
 
         if y is None:
             y = torch.zeros((img.shape[0], self.params.vec_in_dim), device=img.device, dtype=img.dtype)
-            
+
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
 
@@ -173,7 +174,7 @@ def teacache_flux_forward(
                     out = blocks_replace[("single_block", i)]({"img": img,
                                                             "vec": vec,
                                                             "pe": pe,
-                                                            "attn_mask": attn_mask}, 
+                                                            "attn_mask": attn_mask},
                                                             {"original_block": block_wrap})
                     img = out["img"]
                 else:
@@ -202,7 +203,7 @@ def teacache_flux_forward(
             self.previous_residual = img.to(cache_device) - ori_img
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
-        
+
         return img
 
 def teacache_hidream_forward(
@@ -297,7 +298,7 @@ def teacache_hidream_forward(
                     cache['should_calc'] = True
                     cache['accumulated_rel_l1_distance'] = 0
             cache['previous_modulated_input'] = modulated_inp
-            
+
         b = int(len(hidden_states) / len(cond_or_uncond))
 
         for i, k in enumerate(cond_or_uncond):
@@ -375,7 +376,7 @@ def teacache_lumina_forward(self, x, timesteps, context, num_tokens, attention_m
         cap_mask = attention_mask
         bs, c, h, w = x.shape
         x = comfy.ldm.common_dit.pad_to_patch_size(x, (self.patch_size, self.patch_size))
-        
+
         t = self.t_embedder(t, dtype=x.dtype)  # (N, D)
         adaln_input = t
 
@@ -429,11 +430,11 @@ def teacache_lumina_forward(self, x, timesteps, context, num_tokens, attention_m
                 x = layer(x, mask, freqs_cis, adaln_input)
             for i, k in enumerate(cond_or_uncond):
                 self.teacache_state[k]['previous_residual'] = (x.to(cache_device) - ori_x)[i*b:(i+1)*b]
-            
+
         x = self.final_layer(x, adaln_input)
         x = self.unpatchify(x, img_size, cap_size, return_tensor=x_is_tensor)[:,:,:h,:w]
 
-        return -x    
+        return -x
 
 def teacache_hunyuanvideo_forward(
         self,
@@ -578,7 +579,7 @@ def teacache_hunyuanvideo_forward(
 
         if ref_latent is not None:
             img = img[:, ref_latent.shape[1]:]
-        
+
         img = self.final_layer(img, vec, modulation_dims=modulation_dims)  # (N, T, patch_size ** 2 * out_channels)
 
         shape = initial_shape[-3:]
@@ -626,9 +627,10 @@ def teacache_ltxvmodel_forward(
         timestep = timestep * 1000.0
 
         if attention_mask is not None and not torch.is_floating_point(attention_mask):
-            attention_mask = (attention_mask - 1).to(x.dtype).reshape((attention_mask.shape[0], 1, -1, attention_mask.shape[-1])) * torch.finfo(x.dtype).max        
+            attention_mask = (attention_mask - 1).to(x.dtype).reshape((attention_mask.shape[0], 1, -1, attention_mask.shape[-1])) * torch.finfo(x.dtype).max
 
-        pe = precompute_freqs_cis(fractional_coords, dim=self.inner_dim, out_dtype=x.dtype)
+        # pe = precompute_freqs_cis(fractional_coords, dim=self.inner_dim, out_dtype=x.dtype)
+        pe = LTXBaseModel.precompute_freqs_cis(fractional_coords, dim=self.inner_dim, out_dtype=x.dtype)
 
         batch_size = x.shape[0]
         timestep, embedded_timestep = self.adaln_single(
@@ -683,7 +685,7 @@ def teacache_ltxvmodel_forward(
             cache['previous_modulated_input'] = modulated_inp
 
         b = int(len(x) / len(cond_or_uncond))
-        
+
         for i, k in enumerate(cond_or_uncond):
             update_cache_state(self.teacache_state[k], modulated_inp[i*b:(i+1)*b])
 
@@ -693,7 +695,7 @@ def teacache_ltxvmodel_forward(
                 should_calc = (should_calc or self.teacache_state[k]['should_calc'])
         else:
             should_calc = True
-        
+
         if not should_calc:
             for i, k in enumerate(cond_or_uncond):
                 x[i*b:(i+1)*b] += self.teacache_state[k]['previous_residual'].to(x.device)
@@ -801,7 +803,7 @@ def teacache_wanmodel_forward(
                     cache['should_calc'] = True
                     cache['accumulated_rel_l1_distance'] = 0
             cache['previous_modulated_input'] = modulated_inp
-            
+
         b = int(len(x) / len(cond_or_uncond))
 
         for i, k in enumerate(cond_or_uncond):
@@ -852,13 +854,13 @@ class TeaCache:
                 "cache_device": (["cuda", "cpu"], {"default": "cuda", "tooltip": "Device where the cache will reside."}),
             }
         }
-    
+
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("model",)
     FUNCTION = "apply_teacache"
     CATEGORY = "TeaCache"
     TITLE = "TeaCache"
-    
+
     def apply_teacache(self, model, model_type: str, rel_l1_thresh: float, start_percent: float, end_percent: float, cache_device: str):
         if rel_l1_thresh == 0:
             return (model,)
@@ -870,7 +872,7 @@ class TeaCache:
         new_model.model_options["transformer_options"]["coefficients"] = SUPPORTED_MODELS_COEFFICIENTS[model_type]
         new_model.model_options["transformer_options"]["model_type"] = model_type
         new_model.model_options["transformer_options"]["cache_device"] = mm.get_torch_device() if cache_device == "cuda" else torch.device("cpu")
-        
+
         diffusion_model = new_model.get_model_object("diffusion_model")
 
         if "flux" in model_type:
@@ -911,7 +913,7 @@ class TeaCache:
             )
         else:
             raise ValueError(f"Unknown type {model_type}")
-        
+
         def unet_wrapper_function(model_function, kwargs):
             input = kwargs["input"]
             timestep = kwargs["timestep"]
@@ -928,7 +930,7 @@ class TeaCache:
                     if (sigmas[i] - timestep[0]) * (sigmas[i + 1] - timestep[0]) <= 0:
                         current_step_index = i
                         break
-            
+
             if current_step_index == 0:
                 if is_cfg:
                     # uncond -> 1, cond -> 0
@@ -941,21 +943,21 @@ class TeaCache:
                         delattr(diffusion_model, 'teacache_state')
                     if hasattr(diffusion_model, 'accumulated_rel_l1_distance'):
                         delattr(diffusion_model, 'accumulated_rel_l1_distance')
-            
+
             current_percent = current_step_index / (len(sigmas) - 1)
             c["transformer_options"]["current_percent"] = current_percent
             if start_percent <= current_percent <= end_percent:
                 c["transformer_options"]["enable_teacache"] = True
             else:
                 c["transformer_options"]["enable_teacache"] = False
-                
+
             with context:
                 return model_function(input, timestep, **c)
 
         new_model.set_model_unet_function_wrapper(unet_wrapper_function)
 
         return (new_model,)
-    
+
 def patch_optimized_module():
     try:
         from torch._dynamo.eval_frame import OptimizedModule
@@ -1033,18 +1035,18 @@ class CompileModel:
                 "dynamic": ("BOOLEAN", {"default": False, "tooltip": "Enable dynamic mode"}),
             }
         }
-    
+
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("model",)
     FUNCTION = "apply_compile"
     CATEGORY = "TeaCache"
     TITLE = "Compile Model"
-    
+
     def apply_compile(self, model, mode: str, backend: str, fullgraph: bool, dynamic: bool):
         patch_optimized_module()
         patch_same_meta()
         torch._dynamo.config.suppress_errors = True
-        
+
         new_model = model.clone()
         new_model.add_object_patch(
                                 "diffusion_model",
@@ -1056,9 +1058,9 @@ class CompileModel:
                                     dynamic=dynamic
                                 )
                             )
-        
+
         return (new_model,)
-    
+
 
 NODE_CLASS_MAPPINGS = {
     "TeaCache": TeaCache,
